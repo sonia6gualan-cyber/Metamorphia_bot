@@ -40,38 +40,37 @@ async def foliacion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.lower()
     logger.info(f"Respuesta foliación: {text}")
     
-    # --- CORRECCIÓN DE PARSING ---
-    # Detectamos explícitamente el NO antes que el SI para evitar el error de "ma-si-va"
     es_foliada = False
     
-    # Palabras clave para NO
+    # Detección de respuesta
     if "no" in text.split() or "masiva" in text:
         es_foliada = False
-    # Palabras clave para SI (solo si no se detectó un no claro)
     elif "si" in text.split() or "sí" in text.split() or "foliada" in text:
         es_foliada = True
     else:
-        # Fallback por si escribe algo raro, asumimos no para seguridad o repetimos
         await update.message.reply_text("Por favor responde Sí o No.")
         return FOLIACION
 
     context.user_data['foliacion'] = 'si' if es_foliada else 'no'
     
     if es_foliada:
+        # Camino FOLIADA -> Pregunta Grano
         await update.message.reply_text("📏 *Tamaño de Grano*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup([["Fino (No visible)"], ["Medio (Visible)"], ["Grueso (>1mm)"]], one_time_keyboard=True, resize_keyboard=True))
         return GRANO
     else:
-        # CAMINO NO FOLIADO (Mármol, Cuarcita, Hornfels)
+        # Camino NO FOLIADA -> Salta a Mineral Diagnóstico
         context.user_data['grano'] = 'no_aplica'
         context.user_data['textura'] = 'normal'
         
-        # Aquí mostramos CALCITA claramente como pides
+        # Teclado limpio (sin nombres de roca) + Nueva opción Dolomita
         teclado_no_foliado = [
-            ["Calcita (Mármol)"], 
-            ["Cuarzo (Cuarcita)"], 
-            ["Otros (Hornfels)"]
+            ["Calcita"], 
+            ["Dolomita"], 
+            ["Cuarzo"], 
+            ["Anfíbol"],
+            ["Otros"]
         ]
-        await update.message.reply_text("💎 *Mineralogía (Roca Masiva)*\nSelecciona el mineral predominante:", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_no_foliado, one_time_keyboard=True, resize_keyboard=True))
+        await update.message.reply_text("💎 *Mineral Diagnóstico (Roca Masiva)*\nSelecciona el mineral predominante:", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_no_foliado, one_time_keyboard=True, resize_keyboard=True))
         return MINERAL
 
 async def grano(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -88,27 +87,27 @@ async def grano(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         teclado_foliado = [
             ["Biotita", "Granate"], 
             ["Feldespato", "Sillimanita"], 
-            ["Anfíbol"], # Para anfibolita foliada
+            ["Anfíbol"],
             ["Cuarzo Cristalino"]
         ]
-        await update.message.reply_text("💎 *Mineralogía*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_foliado, one_time_keyboard=True, resize_keyboard=True))
+        # Pregunta específica "Mineral Guía" para foliadas
+        await update.message.reply_text("💎 *Mineral Guía*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_foliado, one_time_keyboard=True, resize_keyboard=True))
         return MINERAL
 
 async def textura(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.lower()
-    # Parsing mejorado para textura
     if "satinada" in text or "sí" in text.split() or "si" in text.split():
         context.user_data['textura'] = 'satinada'
     else:
         context.user_data['textura'] = 'normal'
         
-    # Minerales para foliadas de grano fino
     teclado_fino = [
         ["Clorita", "Sericita"], 
         ["Moscovita"], 
         ["Otros"]
     ]
-    await update.message.reply_text("💎 *Mineralogía*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_fino, one_time_keyboard=True, resize_keyboard=True))
+    # Pregunta específica "Mineral Guía" para foliadas
+    await update.message.reply_text("💎 *Mineral Guía*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_fino, one_time_keyboard=True, resize_keyboard=True))
     return MINERAL
 
 async def mineral(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -141,8 +140,9 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Cancelado. /start", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# --- LÓGICA DE CLASIFICACIÓN (Estricta según reglas.pl) ---
+# --- LÓGICA DE CLASIFICACIÓN ---
 def identificar_mineral(t):
+    if "dolomita" in t: return "dolomita" # Nuevo
     if "clorita" in t: return "clorita"
     if "sericita" in t: return "sericita"
     if "moscovita" in t: return "moscovita"
@@ -160,46 +160,51 @@ def clasificar_roca(d):
     f, g, t, m = d['foliacion'], d['grano'], d['textura'], d['mineral']
     posibles = []
     
-    # 1. Rocas Foliadas (f='si')
+    # 1. Rocas Foliadas
     if f == 'si':
-        # PIZARRA: foliacion(si), grano(fino), mineral(M) -> clorita/sericita
         if g=='fino' and t!='satinada' and (m=='clorita' or m=='sericita'): 
             posibles.append({"roca": "Pizarra", "grado": "Muy Bajo", "protolito": "Lutita"})
         
-        # FILITA: foliacion(si), grano(fino), textura(satinada), mineral(M) -> sericita/moscovita
         if g=='fino' and t=='satinada' and (m=='sericita' or m=='moscovita'): 
             posibles.append({"roca": "Filita", "grado": "Bajo", "protolito": "Lutita"})
         
-        # ESQUISTO: foliacion(si), grano(medio), mineral(M) -> biotita/granate
         if g=='medio' and (m=='biotita' or m=='granate'): 
             posibles.append({"roca": "Esquisto", "grado": "Medio", "protolito": "Lutita"})
         
-        # GNEIS: foliacion(si), grano(grueso), mineral(M) -> feldespato/sillimanita
         if g=='grueso' and (m=='feldespato' or m=='sillimanita'): 
             posibles.append({"roca": "Gneis", "grado": "Alto", "protolito": "Lutita/Granito/Diorita"})
         
-        # MIGMATITA: foliacion(si), grano(grueso), mineral(M) -> feldespato/cuarzo_cristalino
         if g=='grueso' and (m=='feldespato' or m=='cuarzo_cristalino'): 
             posibles.append({"roca": "Migmatita", "grado": "Muy Alto", "protolito": "Gneis"})
             
-        # ANFIBOLITA: foliacion(si), mineral(anfibol) -> (Tu regla no exige grano específico, aplica para medio/grueso)
         if m=='anfibol': 
             posibles.append({"roca": "Anfibolita", "grado": "Medio a Alto", "protolito": "Basalto"})
 
-    # 2. Rocas No Foliadas (f='no')
+    # 2. Rocas No Foliadas
     if f == 'no':
         match_found = False
-        # MÁRMOL: foliacion(no), mineral(calcita)
+        
+        # MÁRMOL (Calcita -> Caliza)
         if m=='calcita': 
             posibles.append({"roca": "Mármol", "grado": "Variable", "protolito": "Caliza"})
             match_found = True
             
-        # CUARCITA: foliacion(no), mineral(cuarzo)
+        # MÁRMOL (Dolomita -> Dolomía) - NUEVA REGLA
+        if m=='dolomita': 
+            posibles.append({"roca": "Mármol", "grado": "Variable", "protolito": "Dolomía"})
+            match_found = True
+            
+        # CUARCITA
         if m=='cuarzo': 
             posibles.append({"roca": "Cuarcita", "grado": "Variable", "protolito": "Arenisca"})
             match_found = True
         
-        # HORNFELS: foliacion(no) -> Regla por defecto si no es marmol/cuarcita
+        # ANFIBOLITA (Masiva)
+        if m=='anfibol': 
+            posibles.append({"roca": "Anfibolita (Masiva)", "grado": "Medio a Alto", "protolito": "Basalto"})
+            match_found = True
+        
+        # HORNFELS (Por defecto si no es ninguna de las anteriores)
         if not match_found:
              posibles.append({"roca": "Hornfels", "grado": "Variable (Contacto)", "protolito": "Cualquier roca"})
     
