@@ -1,6 +1,8 @@
 import os
 import logging
 import threading
+import time
+import requests
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -9,11 +11,26 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 # CONFIGURACIÓN DE NUBE
 # ==========================================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+# URL de tu servicio en Render (para auto-ping opcional)
+RENDER_APP_URL = os.getenv("RENDER_EXTERNAL_URL") 
+
 app = Flask(__name__)
 
 @app.route('/')
 def home():
     return "✅ El Bot MetamorphIA está vivo y corriendo."
+
+# Función para mantenerse despierto (Auto-Ping)
+def keep_alive():
+    if not RENDER_APP_URL:
+        return
+    while True:
+        time.sleep(600) # Cada 10 minutos
+        try:
+            requests.get(RENDER_APP_URL)
+            logging.info("Ping de mantenimiento enviado.")
+        except Exception as e:
+            logging.error(f"Error en auto-ping: {e}")
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -142,7 +159,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 # --- LÓGICA DE CLASIFICACIÓN ---
 def identificar_mineral(t):
-    if "dolomita" in t: return "dolomita" # Nuevo
+    if "dolomita" in t: return "dolomita"
     if "clorita" in t: return "clorita"
     if "sericita" in t: return "sericita"
     if "moscovita" in t: return "moscovita"
@@ -184,27 +201,22 @@ def clasificar_roca(d):
     if f == 'no':
         match_found = False
         
-        # MÁRMOL (Calcita -> Caliza)
         if m=='calcita': 
             posibles.append({"roca": "Mármol", "grado": "Variable", "protolito": "Caliza"})
             match_found = True
             
-        # MÁRMOL (Dolomita -> Dolomía) - NUEVA REGLA
         if m=='dolomita': 
             posibles.append({"roca": "Mármol", "grado": "Variable", "protolito": "Dolomía"})
             match_found = True
             
-        # CUARCITA
         if m=='cuarzo': 
             posibles.append({"roca": "Cuarcita", "grado": "Variable", "protolito": "Arenisca"})
             match_found = True
         
-        # ANFIBOLITA (Masiva)
         if m=='anfibol': 
             posibles.append({"roca": "Anfibolita (Masiva)", "grado": "Medio a Alto", "protolito": "Basalto"})
             match_found = True
         
-        # HORNFELS (Por defecto si no es ninguna de las anteriores)
         if not match_found:
              posibles.append({"roca": "Hornfels", "grado": "Variable (Contacto)", "protolito": "Cualquier roca"})
     
@@ -214,10 +226,17 @@ def clasificar_roca(d):
 # EJECUCIÓN
 # ==========================================
 def main() -> None:
+    # 1. Iniciar servidor web en segundo plano
     threading.Thread(target=run_flask).start()
+    
+    # 2. Auto-Ping (Intento de mantener vivo el bot desde dentro)
+    if os.getenv("RENDER_EXTERNAL_URL"):
+        threading.Thread(target=keep_alive).start()
+
     if not TOKEN:
         print("❌ ERROR: TOKEN no encontrado")
         return
+    
     application = Application.builder().token(TOKEN).build()
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
