@@ -2,16 +2,22 @@ import os
 import logging
 import threading
 import time
-import requests
-from flask import Flask
+from flask import Flask, request
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, ConversationHandler
+
+# Intentamos importar requests de forma segura
+try:
+    import requests
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    print("⚠️ ADVERTENCIA: La librería 'requests' no está instalada. El auto-ping no funcionará.")
 
 # ==========================================
 # CONFIGURACIÓN DE NUBE
 # ==========================================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-# URL de tu servicio en Render (para auto-ping opcional)
 RENDER_APP_URL = os.getenv("RENDER_EXTERNAL_URL") 
 
 app = Flask(__name__)
@@ -20,12 +26,11 @@ app = Flask(__name__)
 def home():
     return "✅ El Bot MetamorphIA está vivo y corriendo."
 
-# Función para mantenerse despierto (Auto-Ping)
 def keep_alive():
-    if not RENDER_APP_URL:
+    if not RENDER_APP_URL or not REQUESTS_AVAILABLE:
         return
     while True:
-        time.sleep(600) # Cada 10 minutos
+        time.sleep(600)
         try:
             requests.get(RENDER_APP_URL)
             logging.info("Ping de mantenimiento enviado.")
@@ -57,9 +62,8 @@ async def foliacion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.lower()
     logger.info(f"Respuesta foliación: {text}")
     
+    # Lógica de detección estricta
     es_foliada = False
-    
-    # Detección de respuesta
     if "no" in text.split() or "masiva" in text:
         es_foliada = False
     elif "si" in text.split() or "sí" in text.split() or "foliada" in text:
@@ -71,15 +75,15 @@ async def foliacion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['foliacion'] = 'si' if es_foliada else 'no'
     
     if es_foliada:
-        # Camino FOLIADA -> Pregunta Grano
+        # CAMINO FOLIADA -> Preguntar Grano
         await update.message.reply_text("📏 *Tamaño de Grano*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup([["Fino (No visible)"], ["Medio (Visible)"], ["Grueso (>1mm)"]], one_time_keyboard=True, resize_keyboard=True))
         return GRANO
     else:
-        # Camino NO FOLIADA -> Salta a Mineral Diagnóstico
+        # CAMINO NO FOLIADA -> Saltar a Mineral Diagnóstico
         context.user_data['grano'] = 'no_aplica'
         context.user_data['textura'] = 'normal'
         
-        # Teclado limpio (sin nombres de roca) + Nueva opción Dolomita
+        # Teclado limpio para NO FOLIADAS
         teclado_no_foliado = [
             ["Calcita"], 
             ["Dolomita"], 
@@ -100,14 +104,13 @@ async def grano(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data['grano'] = 'medio' if 'medio' in text else 'grueso'
         context.user_data['textura'] = 'normal'
         
-        # Minerales para foliadas de grano medio/grueso
+        # Minerales para foliadas grano medio/grueso
         teclado_foliado = [
             ["Biotita", "Granate"], 
             ["Feldespato", "Sillimanita"], 
             ["Anfíbol"],
             ["Cuarzo Cristalino"]
         ]
-        # Pregunta específica "Mineral Guía" para foliadas
         await update.message.reply_text("💎 *Mineral Guía*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_foliado, one_time_keyboard=True, resize_keyboard=True))
         return MINERAL
 
@@ -123,7 +126,6 @@ async def textura(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         ["Moscovita"], 
         ["Otros"]
     ]
-    # Pregunta específica "Mineral Guía" para foliadas
     await update.message.reply_text("💎 *Mineral Guía*", parse_mode="Markdown", reply_markup=ReplyKeyboardMarkup(teclado_fino, one_time_keyboard=True, resize_keyboard=True))
     return MINERAL
 
@@ -157,7 +159,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Cancelado. /start", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# --- LÓGICA DE CLASIFICACIÓN ---
+# --- LÓGICA DE CLASIFICACIÓN (Estricta según reglas.pl) ---
 def identificar_mineral(t):
     if "dolomita" in t: return "dolomita"
     if "clorita" in t: return "clorita"
@@ -177,65 +179,64 @@ def clasificar_roca(d):
     f, g, t, m = d['foliacion'], d['grano'], d['textura'], d['mineral']
     posibles = []
     
-    # 1. Rocas Foliadas
+    # 1. Rocas Foliadas (f='si')
     if f == 'si':
+        # PIZARRA
         if g=='fino' and t!='satinada' and (m=='clorita' or m=='sericita'): 
             posibles.append({"roca": "Pizarra", "grado": "Muy Bajo", "protolito": "Lutita"})
-        
+        # FILITA
         if g=='fino' and t=='satinada' and (m=='sericita' or m=='moscovita'): 
             posibles.append({"roca": "Filita", "grado": "Bajo", "protolito": "Lutita"})
-        
+        # ESQUISTO
         if g=='medio' and (m=='biotita' or m=='granate'): 
             posibles.append({"roca": "Esquisto", "grado": "Medio", "protolito": "Lutita"})
-        
+        # GNEIS
         if g=='grueso' and (m=='feldespato' or m=='sillimanita'): 
             posibles.append({"roca": "Gneis", "grado": "Alto", "protolito": "Lutita/Granito/Diorita"})
-        
+        # MIGMATITA
         if g=='grueso' and (m=='feldespato' or m=='cuarzo_cristalino'): 
             posibles.append({"roca": "Migmatita", "grado": "Muy Alto", "protolito": "Gneis"})
-            
+        # ANFIBOLITA
         if m=='anfibol': 
             posibles.append({"roca": "Anfibolita", "grado": "Medio a Alto", "protolito": "Basalto"})
 
-    # 2. Rocas No Foliadas
+    # 2. Rocas No Foliadas (f='no')
     if f == 'no':
         match_found = False
-        
+        # MÁRMOL
         if m=='calcita': 
             posibles.append({"roca": "Mármol", "grado": "Variable", "protolito": "Caliza"})
             match_found = True
-            
         if m=='dolomita': 
             posibles.append({"roca": "Mármol", "grado": "Variable", "protolito": "Dolomía"})
             match_found = True
-            
+        # CUARCITA
         if m=='cuarzo': 
             posibles.append({"roca": "Cuarcita", "grado": "Variable", "protolito": "Arenisca"})
             match_found = True
+        # ANFIBOLITA (Masiva) - Opcional, pero geológicamente correcto incluirla si se elige anfíbol
+        if m=='anfibol':
+             posibles.append({"roca": "Anfibolita", "grado": "Medio a Alto", "protolito": "Basalto"})
+             match_found = True
         
-        if m=='anfibol': 
-            posibles.append({"roca": "Anfibolita (Masiva)", "grado": "Medio a Alto", "protolito": "Basalto"})
-            match_found = True
-        
+        # HORNFELS (Por defecto si no es marmol/cuarcita/anfibolita)
         if not match_found:
              posibles.append({"roca": "Hornfels", "grado": "Variable (Contacto)", "protolito": "Cualquier roca"})
     
     return posibles
 
 # ==========================================
-# EJECUCIÓN
+# EJECUCIÓN PRINCIPAL
 # ==========================================
-def main() -> None:
-    # 1. Iniciar servidor web en segundo plano
+if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
     
-    # 2. Auto-Ping (Intento de mantener vivo el bot desde dentro)
-    if os.getenv("RENDER_EXTERNAL_URL"):
+    if REQUESTS_AVAILABLE and os.getenv("RENDER_EXTERNAL_URL"):
         threading.Thread(target=keep_alive).start()
 
     if not TOKEN:
         print("❌ ERROR: TOKEN no encontrado")
-        return
+        # No hacemos return para que al menos intente arrancar si se configuró mal
     
     application = Application.builder().token(TOKEN).build()
     conv_handler = ConversationHandler(
@@ -251,6 +252,3 @@ def main() -> None:
     application.add_handler(conv_handler)
     print("🤖 Bot Cloud Iniciado...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
